@@ -43,7 +43,14 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           set -euxo pipefail
-          brew install meson ninja cmake pkg-config automake libtool gas-preprocessor go
+          brew install meson ninja cmake pkg-config automake libtool go
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL \
+            https://raw.githubusercontent.com/libav/gas-preprocessor/master/gas-preprocessor.pl \
+            -o "$HOME/.local/bin/gas-preprocessor.pl"
+          chmod +x "$HOME/.local/bin/gas-preprocessor.pl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/gas-preprocessor.pl" -h >/dev/null || true
           go version
 
       - name: Prepare workspace
