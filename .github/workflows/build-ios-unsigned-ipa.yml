@@ -1,0 +1,199 @@
+name: Build iOS Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios-unsigned-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      PROJECT_PATH: "scrcpy-app/Scrcpy Remote.xcodeproj"
+      PROJECT_FILE: "scrcpy-app/Scrcpy Remote.xcodeproj/project.pbxproj"
+      SCHEME_NAME: "Scrcpy Remote"
+      CONFIGURATION: "Release"
+      DERIVED_DATA_PATH: "build/DerivedData"
+      APP_PATH: "build/DerivedData/Build/Products/Release-iphoneos/Scrcpy Remote.app"
+      IPA_PATH: "build/Scrcpy-Remote-unsigned.ipa"
+      XCODEBUILD_LOG: "build/xcodebuild.log"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show build environment
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+          brew --version
+
+      - name: Install build dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euxo pipefail
+          brew install meson ninja cmake pkg-config automake libtool gas-preprocessor go
+          go version
+
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+          mkdir -p build
+          mkdir -p porting/libs/include
+          mkdir -p porting/libs/iphoneos/arm64
+          mkdir -p porting/libs/iphonesimulator/arm64
+          mkdir -p porting/libs/iphonesimulator/x86_64
+          test -f "scrcpy-app/ADBClient/scrcpy-server"
+
+      - name: Normalize SDK references for CI
+        run: |
+          set -euxo pipefail
+          perl -0pi -e '
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.5\.sdk/System/Library/Frameworks/CoreBluetooth\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/Library/Frameworks/AudioToolbox\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/Library/Frameworks/CoreFoundation\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/Library/Frameworks/CoreMotion\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/iOSSupport/System/Library/Frameworks/GameController\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/GameController.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/Library/Frameworks/CoreHaptics\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/CoreHaptics.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/System/Library/Frameworks/AVFoundation\.framework; sourceTree = DEVELOPER_DIR;#path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT;#g;
+            s#path = Platforms/MacOSX\.platform/Developer/SDKs/MacOSX15\.1\.sdk/usr/lib/libz\.tbd; sourceTree = DEVELOPER_DIR;#path = usr/lib/libz.tbd; sourceTree = SDKROOT;#g;
+          ' "$PROJECT_FILE"
+
+      - name: Prepare scrcpy Meson build directory
+        run: |
+          set -euxo pipefail
+          if [[ ! -d scrcpy/x ]]; then
+            meson setup scrcpy/x scrcpy --buildtype=release --strip -Db_lto=true -Dusb=false
+          fi
+
+      - name: Create temporary go.mod for libtsnet
+        run: |
+          set -euxo pipefail
+          if [[ ! -f porting/libtsnet/go.mod ]]; then
+            cat > porting/libtsnet/go.mod <<'EOF'
+          module me.wsen.scrcpy-tsnet
+
+          go 1.24
+          EOF
+          fi
+          (cd porting/libtsnet && go mod tidy)
+
+      - name: Build native dependencies
+        run: |
+          set -euxo pipefail
+          make -C porting adb-mobile
+          make -C porting libsdl
+          make -C porting ffmpeg
+          make -C porting openssl
+          make -C porting vncclient
+          make -C porting tsnet-forwarder
+          make -C porting scrcpy
+
+      - name: Validate native dependency outputs
+        run: |
+          set -euxo pipefail
+          required_libs=(
+            "porting/libs/iphoneos/arm64/libadb-full.a"
+            "porting/libs/iphoneos/arm64/libSDL2.a"
+            "porting/libs/iphoneos/arm64/libavfilter.a"
+            "porting/libs/iphoneos/arm64/libswscale.a"
+            "porting/libs/iphoneos/arm64/libswresample.a"
+            "porting/libs/iphoneos/arm64/libavdevice.a"
+            "porting/libs/iphoneos/arm64/libavformat.a"
+            "porting/libs/iphoneos/arm64/libavcodec.a"
+            "porting/libs/iphoneos/arm64/libavutil.a"
+            "porting/libs/iphoneos/arm64/libssl.a"
+            "porting/libs/iphoneos/arm64/libcrypto.a"
+            "porting/libs/iphoneos/arm64/libvncclient.a"
+            "porting/libs/iphoneos/arm64/libtsnet-forwarder.a"
+            "porting/libs/iphoneos/arm64/libscrcpy.a"
+          )
+
+          for lib in "${required_libs[@]}"; do
+            test -f "$lib"
+          done
+
+      - name: Resolve Swift package dependencies
+        run: |
+          set -euxo pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME_NAME" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -resolvePackageDependencies
+
+      - name: Build unsigned app for device
+        run: |
+          set -euxo pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME_NAME" \
+            -configuration "$CONFIGURATION" \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee "$XCODEBUILD_LOG"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euxo pipefail
+          test -d "$APP_PATH"
+          rm -rf build/Payload "$IPA_PATH"
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          (
+            cd build
+            /usr/bin/zip -r -y "Scrcpy-Remote-unsigned.ipa" Payload
+          )
+          test -f "$IPA_PATH"
+
+      - name: Validate IPA contents
+        run: |
+          set -euxo pipefail
+          unzip -l "$IPA_PATH" | tee build/ipa-contents.txt
+          unzip -l "$IPA_PATH" | grep "Payload/Scrcpy Remote.app"
+          if grep -q "exportArchive" "$XCODEBUILD_LOG"; then
+            echo "Unexpected exportArchive invocation detected" >&2
+            exit 1
+          fi
+          if grep -q "CodeSign " "$XCODEBUILD_LOG"; then
+            echo "Unexpected code signing step detected in xcodebuild log" >&2
+            exit 1
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: scrcpy-app-ios-unsigned-ipa
+          if-no-files-found: error
+          path: |
+            build/Scrcpy-Remote-unsigned.ipa
+            build/DerivedData/Build/Products/Release-iphoneos/Scrcpy Remote.app
+            build/xcodebuild.log
+
+      - name: Publish job summary
+        run: |
+          {
+            echo "## Unsigned IPA build"
+            echo
+            echo "- Project: \`scrcpy-app/Scrcpy Remote.xcodeproj\`"
+            echo "- Scheme: \`Scrcpy Remote\`"
+            echo "- Configuration: \`Release\`"
+            echo "- Artifact: \`build/Scrcpy-Remote-unsigned.ipa\`"
+            echo
+            echo "This workflow produces an **unsigned IPA file** for artifact purposes only."
+            echo "It is **not expected to be directly installable** without a separate signing flow."
+          } >> "$GITHUB_STEP_SUMMARY"
