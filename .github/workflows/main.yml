@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           # 1. 安装基础依赖
-          brew install ffmpeg sdl2 golang fmt pkg-config protobuf
+          brew install ffmpeg sdl2 golang fmt pkg-config protobuf yasm
 
           # [NEW CRITICAL STEP] Download and install the gas-preprocessor script globally
           echo "=> Installing gas-preprocessor for FFmpeg ARM assembly..."
