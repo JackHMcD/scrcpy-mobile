@@ -19,6 +19,23 @@ jobs:
         run: |
           # 1. 安装基础依赖
           brew install ffmpeg sdl2 golang fmt pkg-config protobuf
+
+          # [NEW CRITICAL STEP] Download and install the gas-preprocessor script globally
+          echo "=> Installing gas-preprocessor for FFmpeg ARM assembly..."
+          curl -L https://raw.githubusercontent.com/libav/gas-preprocessor/master/gas-preprocessor.pl -o gas-preprocessor.pl
+          chmod +x gas-preprocessor.pl
+          sudo mv gas-preprocessor.pl /usr/local/bin/
+          
+          mkdir -p libs/iphoneos/arm64 libs/iphonesimulator/arm64 libs/iphonesimulator/x86_64
+
+          # mkdir -p "$HOME/.local/bin"
+          # curl -fsSL \
+          #   https://raw.githubusercontent.com/libav/gas-preprocessor/master/gas-preprocessor.pl \
+          #   -o "$HOME/.local/bin/gas-preprocessor.pl"
+          # chmod +x "$HOME/.local/bin/gas-preprocessor.pl"
+          # echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # "$HOME/.local/bin/gas-preprocessor.pl" -h >/dev/null || true
+          # go version
           
           # 2. 下载并配置官方 Protoc 28.3
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-osx-aarch_64.zip
