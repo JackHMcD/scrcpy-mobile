@@ -1,0 +1,68 @@
+name: Build scrcpy-mobile iOS
+on:
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # 【新增的破局神抽】：强制降级并锁定 CMake 到 3.x 时代，完美兼容老代码
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.6'
+
+      - name: Install dependencies
+        run: |
+          # 1. 安装基础依赖
+          brew install ffmpeg sdl2 golang fmt pkg-config protobuf
+          
+          # 2. 下载并配置官方 Protoc 28.3
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-osx-aarch_64.zip
+          unzip protoc-28.3-osx-aarch_64.zip -d $HOME/protoc_env
+          export PATH="$HOME/protoc_env/bin:$PATH"
+          export CMAKE_PREFIX_PATH="$HOME/protoc_env"
+          echo "$HOME/protoc_env/bin" >> $GITHUB_PATH
+          
+          # 3. 暴力修复 Git Submodule 本地修改冲突
+          find . -type f -name "*.sh" -exec sed -i '' 's/git checkout /git checkout -f /g' {} +
+          find . -type f -name "*.sh" -exec sed -i '' 's/git submodule update/git submodule update --force/g' {} +
+          
+          # 4. 【新增关键步】临时解除 Homebrew OpenSSL 的软链接，消除头文件冲突！
+          brew unlink openssl@3 || true
+          brew unlink openssl@1.1 || true
+          
+          # 5. 全覆盖创建目录，防止 Makefile 切换上下文导致找不到路径
+          mkdir -p libs/iphoneos/arm64 libs/iphonesimulator/arm64 libs/iphonesimulator/x86_64
+          mkdir -p porting/libs/iphoneos/arm64 porting/libs/iphonesimulator/arm64 porting/libs/iphonesimulator/x86_64
+          mkdir -p output/iphoneos/arm64 output/iphonesimulator/arm64 output/iphonesimulator/x86_64
+          
+          # 6. 正式执行编译
+          make libs
+          make -C porting scrcpy-server
+
+      - name: Build iOS App
+        run: |
+          xcodebuild clean build \
+            -project scrcpy-ios/scrcpy-ios.xcodeproj \
+            -scheme "scrcpy-ios" \
+            -sdk iphoneos \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package to IPA
+        run: |
+          mkdir -p Payload
+          mv scrcpy-ios/build/Release-iphoneos/scrcpy-ios.app Payload/
+          zip -r scrcpy-mobile.ipa Payload
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: scrcpy-mobile-ipa
+          path: scrcpy-mobile.ipa
